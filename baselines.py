@@ -350,7 +350,7 @@ class BPR:
         uF = np.copy(self.U[uidx,:])
         iF1 = np.copy(self.I[p,:])
         iF2 = np.copy(self.I[n,:])
-        sigm = self.sigmoid(iF1.T.dot(uF) - iF2.T.dot(uF) + self.bI[p] - self.bI[n])
+        sigm = self.sigmoid(iF1.T.dot(uF) - iF2.T.dot(uF))
         c = 1.0 - sigm
         self.U[uidx,:] += self.learning_rate * (c * (iF1 - iF2) - self.lambda_session * uF)
         self.I[p,:] += self.learning_rate * (c * uF - self.lambda_item * iF1)
@@ -385,7 +385,27 @@ class BPR:
                 err = self.update(uidx, iidx, iidx2)
                 c.append(err)
             print(it, np.mean(c))
-    
+        self.saveEmbedding(sessionids, itemids)
+   
+    def saveEmbedding(self, sessionids, itemids):
+	fp = open("user.bpr."+str(self.n_factors), 'w')
+	for i in range(len(sessionids)):
+	    fp.write(str(sessionids[i]))
+	    t = self.U[i,:]
+	    for e in range(t.shape[0]):
+		fp.write(" " + str(t[e]))
+	    fp.write('\n')
+	fp.close()
+	fp = open("item.bpr."+str(self.n_factors), 'w')
+	for i in range(len(itemids)):
+	    fp.write(str(itemids[i]))
+	    t = self.I[i,:]
+            for e in range(t.shape[0]):
+                fp.write(" " + str(t[e]))
+            fp.write("\n")
+        fp.close()
+
+ 
     def predict_next(self, session_id, input_item_id, predict_for_item_ids):
         '''
         Gives predicton scores for a selected set of items on how likely they be the next item in the session.

@@ -185,7 +185,9 @@ class GRU4Rec:
         else:
             return T.cast(T.mean(T.diag(yhat)), theano.config.floatX)
     def bpr(self, yhat):
-        return T.cast(T.mean(-T.log(T.nnet.sigmoid(T.diag(yhat)-yhat.T))), theano.config.floatX)
+        ans = T.repeat(yhat[:,0:1,:], (self.n_sample+1), axis=-2) - yhat#.reshape((3, -1))
+        return T.cast(T.mean(-T.log(T.nnet.sigmoid(ans))), theano.config.floatX)
+        #return T.cast(T.mean(-T.log(T.nnet.sigmoid(T.diag(yhat)-yhat.T))), theano.config.floatX)
     def bpr_max(self, yhat):
         softmax_scores = self.softmax_neg(yhat).T
         return T.cast(T.mean(-T.log(T.sum(T.nnet.sigmoid(T.diag(yhat)-yhat.T)*softmax_scores, axis=0)+1e-24)+self.bpreg*T.sum((yhat.T**2)*softmax_scores, axis=0)), theano.config.floatX)
@@ -215,14 +217,27 @@ class GRU4Rec:
         if self.init_as_normal: new_rows = self.floatX(np.random.randn(n_new, matrix.shape[1]) * sigma)
         else: new_rows = self.floatX(np.random.rand(n_new, matrix.shape[1]) * sigma * 2 - sigma)
         W.set_value(np.vstack([matrix, new_rows]))
-    def init(self, data):
+
+    def generate_embedding(self, embedding): #embedding : dict {name:vector}
+        embedding_new = {}
+        for i in embedding:
+            vector = embedding[i]
+	    if i not in self.itemidmap:
+	  	continue
+            embedding_new[self.itemidmap[i]] = vector
+        embedding = []
+        for i in range(len(embedding_new)):
+            embedding.append(embedding_new[i])
+        return np.array(embedding, dtype = np.float32)
+
+    def init(self, data, ItemEmbedding):
         data.sort_values([self.session_key, self.time_key], inplace=True)
         offset_sessions = np.zeros(data[self.session_key].nunique()+1, dtype=np.int32)
         offset_sessions[1:] = data.groupby(self.session_key).size().cumsum()
         np.random.seed(42)
         self.Wx, self.Wh, self.Wrz, self.Bh, self.H = [], [], [], [], []
         if self.embedding:
-            self.E = self.init_weights((self.n_items, self.embedding))
+            self.E = theano.shared(self.generate_embedding(ItemEmbedding)) # shape : self.init_weights((self.n_items, self.embedding))
             n_features = self.embedding
         else:
             n_features = self.n_items
@@ -239,8 +254,8 @@ class GRU4Rec:
             self.Wrz.append(theano.shared(value=np.hstack(m2), borrow=True))
             self.Bh.append(theano.shared(value=np.zeros((self.layers[i] * 3,), dtype=theano.config.floatX), borrow=True))
             self.H.append(theano.shared(value=np.zeros((self.batch_size,self.layers[i]), dtype=theano.config.floatX), borrow=True))
-        self.Wy = self.init_weights((self.n_items, self.layers[-1]))
-        self.By = theano.shared(value=np.zeros((self.n_items,1), dtype=theano.config.floatX), borrow=True)
+        self.Wy = self.init_weights((self.layers[-1], self.embedding))
+        self.By = theano.shared(value=np.zeros((self.embedding,), dtype=theano.config.floatX), borrow=True)
         return offset_sessions
     def dropout(self, X, drop_p):
         if drop_p > 0:
@@ -342,6 +357,26 @@ class GRU4Rec:
                     updates[p] = p + velocity2
                 else:
                     updates[p] = p * np.float32(1.0 - self.learning_rate * self.lmbd) - np.float32(self.learning_rate) * g
+
+	fgrads = [T.grad(cost = cost, wrt = full_param) for full_param in full_params]
+	for p, g in zip(full_params, fgrads):
+	    if self.adapt:
+                if self.adapt == 'adagrad':
+                    g = self.adagrad(p, g, updates)
+                if self.adapt == 'rmsprop':
+                    g = self.rmsprop(p, g, updates)
+                if self.adapt == 'adadelta':
+                    g = self.adadelta(p, g, updates)
+                if self.adapt == 'adam':
+                    g = self.adam(p, g, updates)
+	    if self.momentum > 0:
+                velocity = theano.shared(p.get_value(borrow=False) * 0., borrow=True)
+                velocity2 = self.momentum * velocity - np.float32(self.learning_rate) * (g + self.lmbd * p)
+                updates[velocity] = velocity2
+                updates[p] = p + velocity2
+            else:
+                updates[p] = p * np.float32(1.0 - self.learning_rate * self.lmbd) - np.float32(self.learning_rate) * g
+	'''
         for i in range(len(sgrads)):
             g = sgrads[i]
             fullP = full_params[i]
@@ -368,7 +403,9 @@ class GRU4Rec:
                 updates[fullP] = T.inc_subtensor(sparam, velocity2)
             else:
                 updates[fullP] = T.inc_subtensor(sparam, - delta)
+	'''
         return updates
+
     def model(self, X, H, Y=None, drop_p_hidden=0.0, drop_p_embed=0.0, predict=False):
         if self.embedding:
             Sx = self.E[X]
@@ -395,20 +432,47 @@ class GRU4Rec:
             h = self.dropout(h, drop_p_hidden)
             H_new.append(h)
             y = h
+	y = self.hidden_activation(T.dot(y, self.Wy) + self.By)
         if Y is not None:
-            Sy = self.Wy[Y]
-            SBy = self.By[Y]
+            Sy = self.E[Y]
+            #SBy = self.By[Y]
             if predict and self.final_act == 'softmax_logit':
-                y = self.softmax(T.dot(y, Sy.T) + SBy.flatten())
+                y = self.softmax(T.dot(y, Sy.T))
             else:
-                y = self.final_activation(T.dot(y, Sy.T) + SBy.flatten())
-            return H_new, y, [Sx, Sy, SBy]
+                y = self.final_activation(T.batched_dot(Sy, y.dimshuffle(0, 1, 'x')))
+            return H_new, y, [Sx, Sy]
         else:
-            if predict and self.final_act == 'softmax_logit':
-                y = self.softmax(T.dot(y, self.Wy.T) + self.By.flatten())
-            else:
-                y = self.final_activation(T.dot(y, self.Wy.T) + self.By.flatten())
-            return H_new, y, [Sx]
+            return "error"
+    def model_saveUser(self, X, H, Y=None, drop_p_hidden=0.0, drop_p_embed=0.0, predict=False):
+        if self.embedding:
+            Sx = self.E[X]
+            y = self.dropout(Sx, drop_p_embed)
+            H_new = []
+            start = 0
+        else:
+            Sx = self.Wx[0][X]
+            vec = Sx + self.Bh[0]
+            rz = T.nnet.sigmoid(vec.T[self.layers[0]:] + T.dot(H[0], self.Wrz[0]).T)
+            h = self.hidden_activation(T.dot(H[0] * rz[:self.layers[0]].T, self.Wh[0]) + vec.T[:self.layers[0]].T)
+            z = rz[self.layers[0]:].T
+            h = (1.0-z)*H[0] + z*h
+            #h = self.dropout(h, drop_p_hidden)
+            H_new = [h]
+            y = h
+            start = 1
+        for i in range(start, len(self.layers)):
+            vec = T.dot(y, self.Wx[i]) + self.Bh[i]
+            rz = T.nnet.sigmoid(vec.T[self.layers[i]:] + T.dot(H[i], self.Wrz[i]).T)
+            h = self.hidden_activation(T.dot(H[i] * rz[:self.layers[i]].T, self.Wh[i]) + vec.T[:self.layers[i]].T)
+            z = rz[self.layers[i]:].T
+            h = (1.0-z)*H[i] + z*h
+            #h = self.dropout(h, drop_p_hidden)
+            H_new.append(h)
+            y = h
+	y = self.hidden_activation(T.dot(y, self.Wy) + self.By)
+        if Y is None: # because the Y is None, we just want the user's hidden embedding
+            #y = self.final_activation(T.dot(y, self.Wy.T) + self.By.flatten())
+            return H_new, y, Sx
     def generate_neg_samples(self, pop, length):
         if self.sample_alpha:
             sample = np.searchsorted(pop, np.random.rand(self.n_sample *  length))
@@ -417,7 +481,22 @@ class GRU4Rec:
         if length > 1:
             sample = sample.reshape((length, self.n_sample))
         return sample
-    def fit(self, data, retrain=False, sample_store=10000000):
+    def generate_neg_samples_sessionBased(self, data):
+        session_ItemIdxs = data.groupby(self.session_key)['ItemIdx'].unique()
+        session_ids = data[self.session_key].unique()
+        session_samples = []
+        for i in range(len(session_ids)):
+            session_id = session_ids[i]
+            ItemIdxs = session_ItemIdxs[session_id]
+            samples = []
+            for k in range(self.n_sample):
+                t = np.random.choice(self.n_items)
+                while t in ItemIdxs:
+                    t = np.random.choice(self.n_items)
+                samples.append(t)
+            session_samples.append(samples)
+        return np.array(session_samples)
+    def fit(self, data, ItemEmbedding, retrain=False, sample_store=10000000):
         '''
         Trains the network.
 
@@ -441,51 +520,32 @@ class GRU4Rec:
             self.n_items = len(itemids)
             self.itemidmap = pd.Series(data=np.arange(self.n_items), index=itemids)
             data = pd.merge(data, pd.DataFrame({self.item_key:itemids, 'ItemIdx':self.itemidmap[itemids].values}), on=self.item_key, how='inner')
-            offset_sessions = self.init(data)
+            offset_sessions = self.init(data, ItemEmbedding)
         else:
-            new_item_mask = ~np.in1d(itemids, self.itemidmap.index)
-            n_new_items = new_item_mask.sum()
-            if n_new_items:
-                self.itemidmap = self.itemidmap.append(pd.Series(index=itemids[new_item_mask], data=np.arange(n_new_items) + len(self.itemidmap)))
-                for W in [self.E if self.embedding else self.Wx[0], self.Wy]:
-                    self.extend_weights(W, n_new_items)
-                self.By.set_value(np.vstack([self.By.get_value(), np.zeros((n_new_items, 1), dtype=theano.config.floatX)]))
-                self.n_items += n_new_items
-                print('Added {} new items. Number of items is {}.'.format(n_new_items, self.n_items))
-            data = pd.merge(data, pd.DataFrame({self.item_key:itemids, 'ItemIdx':self.itemidmap[itemids].values}), on=self.item_key, how='inner')
-            data.sort_values([self.session_key, self.time_key], inplace=True)
-            offset_sessions = np.zeros(data[self.session_key].nunique()+1, dtype=np.int32)
-            offset_sessions[1:] = data.groupby(self.session_key).size().cumsum()
+            print("We do not allow retrain, just normal train")
         X = T.ivector()
-        Y = T.ivector()
+        Y = T.imatrix()
         H_new, Y_pred, sampled_params = self.model(X, self.H, Y, self.dropout_p_hidden, self.dropout_p_embed)
         cost = self.loss_function(Y_pred)
         params = [self.Wx if self.embedding else self.Wx[1:], self.Wh, self.Wrz, self.Bh]
-        full_params = [self.E if self.embedding else self.Wx[0], self.Wy, self.By]
-        sidxs = [X, Y, Y]
+        #full_params = [self.E if self.embedding else self.Wx[0], self.Wy, self.By] ## update E
+        full_params = [self.Wy, self.By]
+        sidxs = [X, Y]
         updates = self.RMSprop(cost, params, full_params, sampled_params, sidxs)
         for i in range(len(self.H)):
             updates[self.H[i]] = H_new[i]
         train_function = function(inputs=[X, Y], outputs=cost, updates=updates, allow_input_downcast=True)
         base_order = np.argsort(data.groupby(self.session_key)[self.time_key].min().values) if self.time_sort else np.arange(len(offset_sessions)-1)
         if self.n_sample:
-            pop = data.groupby('ItemId').size()
-            pop = pop[self.itemidmap.index.values].values**self.sample_alpha
-            pop = pop.cumsum() / pop.sum()
-            pop[-1] = 1
-            if sample_store:
-                generate_length = sample_store // self.n_sample
-                if generate_length <= 1:
-                    sample_store = 0
-                    print('No example store was used')
-                else:
-                    neg_samples = self.generate_neg_samples(pop, generate_length)
-                    sample_pointer = 0
-                    print('Created sample store with {} batches of samples'.format(generate_length))
-            else:
-                print('No example store was used')
+            session_samples = self.generate_neg_samples_sessionBased(data) 
+            print("We sample n_sample items for every session/user who never see them before")
         data_items = data.ItemIdx.values
+	resample = True
         for epoch in range(self.n_epochs):
+            if resample == True:
+                if self.n_sample:
+                    session_samples = self.generate_neg_samples_sessionBased(data) 
+                    print("We sample n_sample items for every session/user who never see them before")
             for i in range(len(self.layers)):
                 self.H[i].set_value(np.zeros((self.batch_size,self.layers[i]), dtype=theano.config.floatX), borrow=True)
             c = []
@@ -494,6 +554,7 @@ class GRU4Rec:
             maxiter = iters.max()
             start = offset_sessions[session_idx_arr[iters]]
             end = offset_sessions[session_idx_arr[iters]+1]
+            neg_samples = session_samples[session_idx_arr[iters]]
             finished = False
             while not finished:
                 minlen = (end-start).min()
@@ -501,16 +562,8 @@ class GRU4Rec:
                 for i in range(minlen-1):
                     in_idx = out_idx
                     out_idx = data_items[start+i+1]
-                    if self.n_sample:
-                        if sample_store:
-                            if sample_pointer == generate_length:
-                                neg_samples = self.generate_neg_samples(pop, generate_length)
-                                sample_pointer = 0
-                            sample = neg_samples[sample_pointer]
-                            sample_pointer += 1
-                        else:
-                            sample = self.generate_neg_samples(pop, 1)
-                        y = np.hstack([out_idx, sample])
+                    if self.n_sample > 0:
+                        y = np.hstack([np.expand_dims(out_idx, axis=-1), neg_samples])
                     else:
                         y = out_idx
                     cost = train_function(in_idx, y)
@@ -521,6 +574,7 @@ class GRU4Rec:
                         return
                 start = start+minlen-1
                 mask = np.arange(len(iters))[(end-start)<=1]
+		#print("new user add")
                 for idx in mask:
                     maxiter += 1
                     if maxiter >= len(offset_sessions)-1:
@@ -529,6 +583,7 @@ class GRU4Rec:
                     iters[idx] = maxiter
                     start[idx] = offset_sessions[session_idx_arr[maxiter]]
                     end[idx] = offset_sessions[session_idx_arr[maxiter]+1]
+                    neg_samples[idx] = session_samples[session_idx_arr[maxiter]]
                 if len(mask) and self.reset_after_session:
                     for i in range(len(self.H)):
                         tmp = self.H[i].get_value(borrow=True)
@@ -571,17 +626,19 @@ class GRU4Rec:
             Y = T.ivector()
             for i in range(len(self.layers)):
                 self.H[i].set_value(np.zeros((batch,self.layers[i]), dtype=theano.config.floatX), borrow=True)
-            if predict_for_item_ids is not None:
-                H_new, yhat, _ = self.model(X, self.H, Y, predict=True)
-            else:
-                H_new, yhat, _ = self.model(X, self.H, predict=True)
+            #if predict_for_item_ids is not None:
+            #    H_new, yhat, _ = self.model(X, self.H, Y, predict=True)
+            #else:
+            H_new, yhat, _ = self.model_saveUser(X, self.H, predict=True) # now, H_new save every layers' embedding, and yhat save the last layer out as user embedding
+            
             updatesH = OrderedDict()
             for i in range(len(self.H)):
                 updatesH[self.H[i]] = H_new[i]
-            if predict_for_item_ids is not None:
-                self.predict = function(inputs=[X, Y], outputs=yhat, updates=updatesH, allow_input_downcast=True)
-            else:
-                self.predict = function(inputs=[X], outputs=yhat, updates=updatesH, allow_input_downcast=True)
+            #if predict_for_item_ids is not None:
+            #    self.predict = function(inputs=[X, Y], outputs=yhat, updates=updatesH, allow_input_downcast=True)
+            #else:
+            self.predict = function(inputs=[X], outputs=yhat, updates=updatesH, allow_input_downcast=True)
+            
             self.current_session = np.ones(batch) * -1
             self.predict_batch = batch
         session_change = np.arange(batch)[session_ids != self.current_session]
@@ -592,10 +649,23 @@ class GRU4Rec:
                 self.H[i].set_value(tmp, borrow=True)
             self.current_session=session_ids.copy()
         in_idxs = self.itemidmap[input_item_ids]
-        if predict_for_item_ids is not None:
-            iIdxs = self.itemidmap[predict_for_item_ids]
-            preds = np.asarray(self.predict(in_idxs, iIdxs)).T
-            return pd.DataFrame(data=preds, index=predict_for_item_ids)
-        else:
-            preds = np.asarray(self.predict(in_idxs)).T
-            return pd.DataFrame(data=preds, index=self.itemidmap.index)
+        #if predict_for_item_ids is not None:
+        #    iIdxs = self.itemidmap[predict_for_item_ids]
+        #    preds = np.asarray(self.predict(in_idxs, iIdxs)).T
+        #    return pd.DataFrame(data=preds, index=predict_for_item_ids)
+        #else:
+        preds = np.asarray(self.predict(in_idxs))
+        return preds  #pd.DataFrame(data=preds, index=self.itemidmap.index)
+
+    def save_ItemEmbedding(self, data, filename = 'item_embedding'): #self.itemidmap, self.E
+        itemids = data[self.item_key].unique()
+        Embedding = self.E.get_value(borrow=True)
+        fp = open(filename, 'w')
+        for id in itemids:
+            idx = self.itemidmap[id]
+            vector = Embedding[idx]
+            fp.write(str(id))
+            for i in range(len(vector)):
+                fp.write(" "+str(vector[i]))
+            fp.write("\n")
+        fp.close()

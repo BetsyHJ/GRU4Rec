@@ -8,9 +8,10 @@ Created on Fri Jun 26 17:27:26 2015
 import numpy as np
 import pandas as pd
 
-def evaluate_sessions_batch(pr, test_data, items=None, cut_off=20, batch_size=100, break_ties=False, session_key='SessionId', item_key='ItemId', time_key='Time'):
+def evaluate_sessions_batch(pr, test_data, items=None, cut_off=20, batch_size=100, break_ties=False, session_key='SessionId', item_key='ItemId', time_key='Time', SaveUserFile = 'user.embedding'):
     '''
-    Evaluates the GRU4Rec network wrt. recommendation accuracy measured by recall@N and MRR@N.
+    Change this function as the user embedding saving, and make the last layer output as user's embedding.
+    #not Evaluates the GRU4Rec network wrt. recommendation accuracy measured by recall@N and MRR@N.
 
     Parameters
     --------
@@ -42,12 +43,14 @@ def evaluate_sessions_batch(pr, test_data, items=None, cut_off=20, batch_size=10
         (Recall@N, MRR@N)
     
     '''
-    print('Measuring Recall@{} and MRR@{}'.format(cut_off-1, cut_off-1))
+    #print('Measuring Recall@{} and MRR@{}'.format(cut_off-1, cut_off-1))
+    print('Saving the last GRU layer\'s output as user\'s embedding.')
     test_data.sort_values([session_key, time_key], inplace=True)
     offset_sessions = np.zeros(test_data[session_key].nunique()+1, dtype=np.int32)
     offset_sessions[1:] = test_data.groupby(session_key).size().cumsum()
-    evalutation_point_count = 0
-    mrr, recall = 0.0, 0.0
+    session_id_sort = test_data[session_key].unique()
+    #evalutation_point_count = 0
+    #mrr, recall = 0.0, 0.0
     if len(offset_sessions) - 1 < batch_size:
         batch_size = len(offset_sessions) - 1
     iters = np.arange(batch_size).astype(np.int32)
@@ -56,7 +59,8 @@ def evaluate_sessions_batch(pr, test_data, items=None, cut_off=20, batch_size=10
     start = offset_sessions[iters]
     end = offset_sessions[iters+1]
     in_idx = np.zeros(batch_size, dtype=np.int32)
-    sampled_items = (items is not None)
+    #sampled_items = (items is not None)
+    fp = open(SaveUserFile, 'w')
     while True:
         valid_mask = iters >= 0
         if valid_mask.sum() == 0:
@@ -64,41 +68,32 @@ def evaluate_sessions_batch(pr, test_data, items=None, cut_off=20, batch_size=10
         start_valid = start[valid_mask]
         minlen = (end[valid_mask]-start_valid).min()
         in_idx[valid_mask] = test_data.ItemId.values[start_valid]
-        for i in range(minlen-1):
-            out_idx = test_data.ItemId.values[start_valid+i+1]
-            if sampled_items:
-                uniq_out = np.unique(np.array(out_idx, dtype=np.int32))
-                preds = pr.predict_next_batch(iters, in_idx, np.hstack([items, uniq_out[~np.in1d(uniq_out,items)]]), batch_size)
-            else:
-                preds = pr.predict_next_batch(iters, in_idx, None, batch_size) #TODO: Handling sampling?
-            preds.fillna(0, inplace=True)
-            if break_ties:
-                preds += np.random.rand(*preds.values.shape) * 1e-8
-            in_idx[valid_mask] = out_idx
-            if sampled_items:
-                others = preds.ix[items].values.T[valid_mask].T
-                targets = np.diag(preds.ix[in_idx].values)[valid_mask]
-                ranks = (others > targets).sum(axis=0) +1
-            else:
-                ranks = (preds.values.T[valid_mask].T > np.diag(preds.ix[in_idx].values)[valid_mask]).sum(axis=0) + 1
-            rank_ok = ranks < cut_off
-            recall += rank_ok.sum()
-            mrr += (1.0 / ranks[rank_ok]).sum()
-            evalutation_point_count += len(ranks)
-            #pos += 1
+        for i in range(minlen):
+            in_idx[valid_mask] = test_data.ItemId.values[start_valid + i]
+            #out_idx = test_data.ItemId.values[start_valid+i+1]
+            preds = pr.predict_next_batch(iters, in_idx, None, batch_size) #TODO: Handling sampling?
+            #preds.fillna(0, inplace=True)
         start = start+minlen-1
-        mask = np.arange(len(iters))[(valid_mask) & (end-start<=1)]
-        for idx in mask:
+        mask = np.arange(len(iters))[(valid_mask) & (end-start<=1)] # 将那些已经处理完的session选中,以index的情况选中
+        for idx in mask: #对于每一个已经处理完的session
+            ## 对每一个处理完的session，输出其最终的表示，作为这个session的用户表示，我们将一个用户的所有记录都作为一个session。
+            session_id_done = session_id_sort[iters[idx]] # session_index(iters[idx]) -> session_key(session_id_done) 
+            embedding = preds[idx]
+	    fp.write(str(session_id_done))
+	    for e in range(len(embedding)):
+                fp.write(" "+str(embedding[e]))
+	    fp.write("\n")
+            #fp.write(str(session_id_done)+"\t"+str(embedding)+"\n")
             maxiter += 1
-            if maxiter >= len(offset_sessions)-1:
+            if maxiter >= len(offset_sessions)-1: #当没有新的session可以加入时将已经处理完的session的iter设置为-1.
                 iters[idx] = -1
-            else:
+            else: # 添加一个新的session
                 #pos[idx] = 0
                 iters[idx] = maxiter
                 start[idx] = offset_sessions[maxiter]
                 end[idx] = offset_sessions[maxiter+1]
-    return recall/evalutation_point_count, mrr/evalutation_point_count
-    
+    fp.close()
+
 def evaluate_sessions(pr, test_data, train_data, items=None, cut_off=20, session_key='SessionId', item_key='ItemId', time_key='Time'):    
     '''
     Evaluates the baselines wrt. recommendation accuracy measured by recall@N and MRR@N. Has no batch evaluation capabilities. Breaks up ties.
