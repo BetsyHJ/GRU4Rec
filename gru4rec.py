@@ -574,7 +574,7 @@ class GRU4Rec:
                         return
                 start = start+minlen-1
                 mask = np.arange(len(iters))[(end-start)<=1]
-		#print("new user add")
+		print("new user add")
                 for idx in mask:
                     maxiter += 1
                     if maxiter >= len(offset_sessions)-1:

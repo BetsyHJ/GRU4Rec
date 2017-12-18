@@ -13,7 +13,7 @@ import pandas as pd
 import gru4rec
 import evaluation
 
-PATH_TO_TRAIN = '../data/music/train.oneout.csv'#'rsc15_train_full.txt'
+PATH_TO_TRAIN = '../data/movie/train.oneout.csv'#'rsc15_train_full.txt'
 #PATH_TO_TEST = '../data/test.oneout.csv'#'/path/to/rsc15_test.txt'
 
 File_ItemEmbedding = sys.argv[1]
