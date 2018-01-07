@@ -72,18 +72,22 @@ def evaluate_sessions_batch(pr, test_data, items=None, cut_off=20, batch_size=10
             in_idx[valid_mask] = test_data.ItemId.values[start_valid + i]
             #out_idx = test_data.ItemId.values[start_valid+i+1]
             preds = pr.predict_next_batch(iters, in_idx, None, batch_size) #TODO: Handling sampling?
+	    #print "shape is ", len(preds), preds[0].shape
             #preds.fillna(0, inplace=True)
         start = start+minlen-1
         mask = np.arange(len(iters))[(valid_mask) & (end-start<=1)] # 将那些已经处理完的session选中,以index的情况选中
         for idx in mask: #对于每一个已经处理完的session
             ## 对每一个处理完的session，输出其最终的表示，作为这个session的用户表示，我们将一个用户的所有记录都作为一个session。
             session_id_done = session_id_sort[iters[idx]] # session_index(iters[idx]) -> session_key(session_id_done) 
+	    
             embedding = preds[idx]
 	    fp.write(str(session_id_done))
 	    for e in range(len(embedding)):
                 fp.write(" "+str(embedding[e]))
+                
 	    fp.write("\n")
             #fp.write(str(session_id_done)+"\t"+str(embedding)+"\n")
+	    
             maxiter += 1
             if maxiter >= len(offset_sessions)-1: #当没有新的session可以加入时将已经处理完的session的iter设置为-1.
                 iters[idx] = -1

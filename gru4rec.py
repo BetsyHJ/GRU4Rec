@@ -481,7 +481,7 @@ class GRU4Rec:
         if length > 1:
             sample = sample.reshape((length, self.n_sample))
         return sample
-    def generate_neg_samples_sessionBased(self, data):
+    def generate_neg_samples_sessionBased(self, data, pop):
         session_ItemIdxs = data.groupby(self.session_key)['ItemIdx'].unique()
         session_ids = data[self.session_key].unique()
         session_samples = []
@@ -489,10 +489,13 @@ class GRU4Rec:
             session_id = session_ids[i]
             ItemIdxs = session_ItemIdxs[session_id]
             samples = []
+	    #print "user info:", session_id, len(ItemIdxs)
             for k in range(self.n_sample):
-                t = np.random.choice(self.n_items)
+                t = np.searchsorted(pop, np.random.rand())
                 while t in ItemIdxs:
-                    t = np.random.choice(self.n_items)
+		    t1 = np.random.rand()
+                    t = np.searchsorted(pop, t1)
+		    #print t1, t
                 samples.append(t)
             session_samples.append(samples)
         return np.array(session_samples)
@@ -537,14 +540,20 @@ class GRU4Rec:
         train_function = function(inputs=[X, Y], outputs=cost, updates=updates, allow_input_downcast=True)
         base_order = np.argsort(data.groupby(self.session_key)[self.time_key].min().values) if self.time_sort else np.arange(len(offset_sessions)-1)
         if self.n_sample:
-            session_samples = self.generate_neg_samples_sessionBased(data) 
+            pop = data.groupby('ItemId').size()
+            pop = pop[self.itemidmap.index.values].values
+            pop = 1.0 * pop.cumsum() / pop.sum()
+            pop[-1] = 1
+	    #for i in range(len(pop)):
+	    #    print " ".join(str(pop[i]))
+            session_samples = self.generate_neg_samples_sessionBased(data, pop) 
             print("We sample n_sample items for every session/user who never see them before")
         data_items = data.ItemIdx.values
 	resample = True
         for epoch in range(self.n_epochs):
             if resample == True:
                 if self.n_sample:
-                    session_samples = self.generate_neg_samples_sessionBased(data) 
+                    session_samples = self.generate_neg_samples_sessionBased(data, pop) 
                     print("We sample n_sample items for every session/user who never see them before")
             for i in range(len(self.layers)):
                 self.H[i].set_value(np.zeros((self.batch_size,self.layers[i]), dtype=theano.config.floatX), borrow=True)
@@ -574,7 +583,7 @@ class GRU4Rec:
                         return
                 start = start+minlen-1
                 mask = np.arange(len(iters))[(end-start)<=1]
-		print("new user add")
+		#print("new user add")
                 for idx in mask:
                     maxiter += 1
                     if maxiter >= len(offset_sessions)-1:

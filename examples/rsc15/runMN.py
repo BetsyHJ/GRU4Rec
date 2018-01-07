@@ -62,7 +62,7 @@ if __name__ == '__main__':
     #Reproducing results from "Recurrent Neural Networks with Top-k Gains for Session-based Recommendations" on RSC15 (http://arxiv.org/abs/1706.03847) 
     print('Training GRU4Rec with 100 hidden units')
     start_time = time.time()
-    gru = MN4rec.GRU4Rec(loss='bpr', final_act='linear', hidden_act='tanh', layers=[256], batch_size=200, embedding=length, KBembedding=KBlength, dropout_p_hidden=0.2, n_sample=10, learning_rate=0.001, momentum=0.1, sample_alpha=0, time_sort=True, n_epochs=10, train_random_order=True)
+    gru = MN4rec.GRU4Rec(loss='bpr', final_act='linear', hidden_act='tanh', layers=[256], batch_size=200, embedding=length, KBembedding=KBlength, dropout_p_hidden=0.2, n_sample=10, learning_rate=0.001, momentum=0.1, sample_alpha=0, time_sort=True, n_epochs=3, train_random_order=True, out_dim=int(sys.argv[-1]))
     gru.fit(data, ItemEmbedding, KBItemEmbedding)
     print("Training time is")
     print (start_time - time.time())
