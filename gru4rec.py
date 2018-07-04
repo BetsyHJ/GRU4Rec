@@ -225,6 +225,8 @@ class GRU4Rec:
 	    if i not in self.itemidmap:
 	  	continue
             embedding_new[self.itemidmap[i]] = vector
+        if len(embedding_new) != self.n_items:
+            print "the input item embedding is not right~"
         embedding = []
         for i in range(len(embedding_new)):
             embedding.append(embedding_new[i])
@@ -483,7 +485,7 @@ class GRU4Rec:
         return sample
     def generate_neg_samples_sessionBased(self, data, pop):
         session_ItemIdxs = data.groupby(self.session_key)['ItemIdx'].unique()
-        session_ids = data[self.session_key].unique()
+        session_ids = data[self.session_key].unique()# data is sorted, so the order is sure.
         session_samples = []
         for i in range(len(session_ids)):
             session_id = session_ids[i]

@@ -7,3 +7,4 @@ python runMN2.py ../data/book/BPROut/book.ratingtrain_BPROutput.oneout.item64 ..
 python runMN2.py ../data/book/BPROut/book.ratingtrain_BPROutput.oneout.item64 ../data/book/TransE/book4MN.TransEOutput book.item_embedding.in64.out256 book.user.embedding.in64.out256 256
 python runMN2.py ../data/book/BPROut/book.ratingtrain_BPROutput.oneout.item128 ../data/book/TransE/book4MN.TransEOutput book.item_embedding.in128.out256 book.user.embedding.in128.out256 256
 python runMN2.py ../data/book/BPROut/book.ratingtrain_BPROutput.oneout.item256 ../data/book/TransE/book4MN.TransEOutput book.item_embedding.in256.out256 book.user.embedding.in256.out256 256
+python run_KVMN.py ../data/book/BPROut/book.ratingtrain_BPROutput.oneout.item256 ../data/book/TransE/book4MN.TransEOutput ../data/book/TransE/book.selected_rel.txt book.item_embedding.KV.in256.out256 book.user.embedding.KV.in256.out256 256
